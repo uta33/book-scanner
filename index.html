@@ -728,8 +728,7 @@
         let currentBook = null;
         let currentRating = 0;
         let html5QrCode = null;
-        let isScanning = false;
-        
+
         // DOM要素
         const elements = {
             startScan: document.getElementById('startScan'),
@@ -755,7 +754,23 @@
             toast: document.getElementById('toast'),
             scanStatus: document.getElementById('scanStatus')
         };
-        
+
+        function getTodayISO() {
+            return new Date().toISOString().split('T')[0];
+        }
+
+        function renderStars(rating) {
+            return '★'.repeat(rating) + '☆'.repeat(5 - rating);
+        }
+
+        function getHistory() {
+            return JSON.parse(localStorage.getItem('bookshelf_history') || '[]');
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
         // 初期化
         document.addEventListener('DOMContentLoaded', () => {
             loadSettings();
@@ -764,8 +779,7 @@
             setupStarRating();
             setupEventListeners();
             
-            // 今日の日付をデフォルトに
-            elements.readDate.value = new Date().toISOString().split('T')[0];
+            elements.readDate.value = getTodayISO();
         });
         
         // タブ切り替え
@@ -817,23 +831,18 @@
         
         // バーコードスキャン
         async function startScanning() {
-            if (isScanning) return;
-            
+            if (html5QrCode) return;
+
             try {
                 html5QrCode = new Html5Qrcode("reader");
-                
+
                 await html5QrCode.start(
                     { facingMode: "environment" },
-                    {
-                        fps: 10,
-                        qrbox: { width: 250, height: 150 },
-                        aspectRatio: 1.5
-                    },
+                    { fps: 10, qrbox: { width: 250, height: 150 }, aspectRatio: 1.5 },
                     onScanSuccess,
                     onScanFailure
                 );
-                
-                isScanning = true;
+
                 hideScanStatus();
                 elements.startScan.style.display = 'none';
                 elements.stopScan.style.display = 'flex';
@@ -844,14 +853,13 @@
         }
         
         async function stopScanning() {
-            if (html5QrCode && isScanning) {
-                await html5QrCode.stop();
-                html5QrCode.clear();
-                isScanning = false;
-                hideScanStatus();
-                elements.startScan.style.display = 'flex';
-                elements.stopScan.style.display = 'none';
-            }
+            if (!html5QrCode) return;
+            await html5QrCode.stop();
+            html5QrCode.clear();
+            html5QrCode = null;
+            hideScanStatus();
+            elements.startScan.style.display = 'flex';
+            elements.stopScan.style.display = 'none';
         }
         
         function onScanSuccess(decodedText) {
@@ -866,14 +874,11 @@
             }
         }
         
-        function onScanFailure(error) {
-            // スキャン失敗は無視（連続スキャン中のため）
-        }
+        function onScanFailure(error) {}
 
         function showScanStatus(message, isFound = false) {
-            const el = elements.scanStatus;
-            el.textContent = message;
-            el.className = 'scan-status show' + (isFound ? ' found' : '');
+            elements.scanStatus.textContent = message;
+            elements.scanStatus.className = 'scan-status show' + (isFound ? ' found' : '');
         }
 
         function hideScanStatus() {
@@ -891,17 +896,14 @@
             
             elements.loading.classList.add('show');
             elements.bookCard.classList.remove('show');
-            showScanStatus('書籍情報を検索中...');
 
             try {
-                // openBD API
                 const response = await fetch(`https://api.openbd.jp/v1/get?isbn=${cleaned}`);
                 const data = await response.json();
-                
+
                 if (data && data[0]) {
                     const book = data[0];
                     const summary = book.summary || {};
-                    const onix = book.onix || {};
                     
                     currentBook = {
                         title: summary.title || '不明',
@@ -914,7 +916,6 @@
                     
                     displayBook(currentBook);
                 } else {
-                    // Google Books APIにフォールバック
                     await searchGoogleBooks(cleaned);
                 }
             } catch (error) {
@@ -922,7 +923,6 @@
                 showToast('書籍情報の取得に失敗しました', 'error');
             } finally {
                 elements.loading.classList.remove('show');
-                hideScanStatus();
             }
         }
         
@@ -964,11 +964,10 @@
                 elements.bookCover.style.display = 'none';
             }
             
-            // リセット
             currentRating = 0;
             updateStars();
             elements.bookMemo.value = '';
-            elements.readDate.value = new Date().toISOString().split('T')[0];
+            elements.readDate.value = getTodayISO();
             
             elements.bookCard.classList.add('show');
             updatePreview();
@@ -983,9 +982,9 @@
         }
         
         function generateMarkdown() {
-            const date = elements.readDate.value || new Date().toISOString().split('T')[0];
+            const date = elements.readDate.value || getTodayISO();
             const memo = elements.bookMemo.value;
-            const stars = '★'.repeat(currentRating) + '☆'.repeat(5 - currentRating);
+            const stars = renderStars(currentRating);
             
             let md = `\n---\n\n`;
             md += `## ${currentBook.title}\n\n`;
@@ -1016,15 +1015,18 @@
                 return;
             }
 
-            const settings = loadSettings();
+            const settings = {
+                vaultName: elements.vaultName.value,
+                folderPath: elements.folderPath.value,
+                fileName: elements.fileName.value
+            };
             if (!settings.vaultName) {
                 showToast('設定でVault名を入力してください', 'error');
                 document.querySelector('[data-tab="settings"]').click();
                 return;
             }
 
-            // 重複ISBN検出
-            const history = JSON.parse(localStorage.getItem('bookshelf_history') || '[]');
+            const history = getHistory();
             const duplicate = history.find(h => h.isbn === currentBook.isbn);
             if (duplicate) {
                 const savedDate = duplicate.readDate || duplicate.savedAt?.split('T')[0];
@@ -1048,8 +1050,7 @@
             // Obsidian URIスキームで追記
             const obsidianUri = `obsidian://advanced-uri?vault=${encodeURIComponent(settings.vaultName)}&filepath=${encodeURIComponent(filePath)}&data=${encodeURIComponent(markdown)}&mode=append`;
 
-            // 履歴に保存
-            saveToHistory(currentBook);
+            saveToHistory(currentBook, history);
 
             // トーストを先に表示してからObsidianを開く（iOS PWA対応）
             showToast('Obsidianに保存しました', 'success');
@@ -1082,21 +1083,16 @@
         }
         
         // 履歴管理
-        function saveToHistory(book) {
-            const history = JSON.parse(localStorage.getItem('bookshelf_history') || '[]');
-            history.unshift({
-                ...book,
-                rating: currentRating,
-                readDate: elements.readDate.value,
-                savedAt: new Date().toISOString()
-            });
-            // 最新50件まで保持
-            localStorage.setItem('bookshelf_history', JSON.stringify(history.slice(0, 50)));
-            loadHistory();
+        function saveToHistory(book, history = getHistory()) {
+            const updated = [
+                { ...book, rating: currentRating, readDate: elements.readDate.value, savedAt: new Date().toISOString() },
+                ...history
+            ].slice(0, 50);
+            localStorage.setItem('bookshelf_history', JSON.stringify(updated));
+            loadHistory(updated);
         }
-        
-        function loadHistory() {
-            const history = JSON.parse(localStorage.getItem('bookshelf_history') || '[]');
+
+        function loadHistory(history = getHistory()) {
             
             if (history.length === 0) {
                 elements.historyList.innerHTML = `
@@ -1112,14 +1108,14 @@
             
             elements.historyList.innerHTML = history.map(book => `
                 <div class="history-item">
-                    ${book.cover 
-                        ? `<img src="${book.cover}" alt="${book.title}">`
+                    ${book.cover
+                        ? `<img src="${escapeHtml(book.cover)}" alt="${escapeHtml(book.title)}">`
                         : `<div class="book-cover-placeholder" style="width:50px;height:70px;">No Image</div>`
                     }
                     <div class="history-item-info">
-                        <h4>${book.title}</h4>
-                        <p>${book.author} ・ ${'★'.repeat(book.rating)}${'☆'.repeat(5 - book.rating)}</p>
-                        <p>${book.readDate}</p>
+                        <h4>${escapeHtml(book.title)}</h4>
+                        <p>${escapeHtml(book.author)} ・ ${renderStars(book.rating)}</p>
+                        <p>${escapeHtml(book.readDate)}</p>
                     </div>
                 </div>
             `).join('');
